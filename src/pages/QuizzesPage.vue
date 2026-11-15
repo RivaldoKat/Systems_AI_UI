@@ -52,6 +52,13 @@
               </span>
               <span v-if="quiz.myFeedback" class="quiz-grade-feedback">{{ quiz.myFeedback }}</span>
               <q-btn
+                v-if="quiz.myAttemptId && !isOpen(quiz) && !isUpcoming(quiz)"
+                flat
+                no-caps
+                label="Review answers"
+                @click="openReview(quiz)"
+              />
+              <q-btn
                 v-if="quiz.myAttemptStatus === 'SUBMITTED'"
                 flat
                 no-caps
@@ -184,7 +191,29 @@
                   color="negative"
                   icon="delete_outline"
                   aria-label="Remove question"
-                  @click="quizForm.questions.splice(index, 1)"
+                  @click="removeQuestion(index)"
+                />
+              </div>
+              <div class="quiz-question-image">
+                <q-file
+                  v-model="question.imageFile"
+                  outlined
+                  dense
+                  clearable
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  :max-file-size="10 * 1024 * 1024"
+                  label="Add a diagram or image (optional)"
+                  @update:model-value="uploadQuestionImage(question, $event)"
+                  @rejected="createError = 'Choose a PNG, JPEG, GIF, or WEBP image under 10 MB.'"
+                >
+                  <template #prepend><q-icon name="image" /></template>
+                </q-file>
+                <q-spinner v-if="question.imageUploading" color="primary" />
+                <q-img
+                  v-if="question.imagePreview"
+                  :src="question.imagePreview"
+                  fit="contain"
+                  class="quiz-question-image-preview"
                 />
               </div>
               <div v-if="question.questionType === 'MULTIPLE_CHOICE'" class="quiz-option-editor">
@@ -254,10 +283,37 @@
               <h2>{{ selectedQuiz?.title }}</h2>
               <p>{{ selectedQuiz?.description }}</p>
             </div>
-            <q-btn flat round dense icon="close" v-close-popup aria-label="Close quiz" />
+            <q-btn
+              flat
+              round
+              dense
+              icon="close"
+              :disable="!reviewMode && !quizExpired"
+              v-close-popup
+              aria-label="Close quiz"
+            />
           </q-card-section>
           <q-separator />
           <q-card-section class="quiz-dialog-fields">
+            <q-banner
+              v-if="!reviewMode"
+              rounded
+              class="quiz-timer"
+              :class="{ expired: quizExpired }"
+            >
+              <q-icon name="timer" />
+              <strong v-if="!quizExpired">
+                Time remaining: {{ formatRemainingTime(remainingSeconds) }}
+              </strong>
+              <strong v-else>Time is up — submitting your answers…</strong>
+            </q-banner>
+            <q-banner
+              v-if="selectedQuiz?.questions?.some((question) => question.questionType === 'MULTIPLE_CHOICE' && !question.options?.length)"
+              rounded
+              class="error-banner"
+            >
+              Some multiple-choice options could not be loaded. Close the quiz and try again.
+            </q-banner>
             <div
               v-for="(question, index) in selectedQuiz?.questions || []"
               :key="question.id"
@@ -267,13 +323,26 @@
                 >Question {{ index + 1 }} <span>{{ question.maxPoints }} points</span></label
               >
               <p>{{ question.prompt }}</p>
-              <q-option-group
-                v-if="question.questionType === 'MULTIPLE_CHOICE'"
-                v-model="answers[question.id]"
-                :options="question.options.map((option) => ({ label: option.text, value: option.id }))"
-                type="radio"
-                color="primary"
+              <q-img
+                v-if="imageSources[question.id]"
+                :src="imageSources[question.id]"
+                fit="contain"
+                class="quiz-question-image-preview"
               />
+              <q-banner v-if="imageErrors[question.id]" dense rounded class="error-banner">
+                {{ imageErrors[question.id] }}
+              </q-banner>
+              <div v-if="question.questionType === 'MULTIPLE_CHOICE'" class="quiz-answer-options">
+                <q-radio
+                  v-for="option in question.options || []"
+                  :key="option.id"
+                  v-model="answers[question.id]"
+                  :val="option.id"
+                  :label="optionLabel(question, option)"
+                  :disable="reviewMode || quizExpired"
+                  color="primary"
+                />
+              </div>
               <q-input
                 v-else
                 v-model="answers[question.id]"
@@ -281,15 +350,35 @@
                 autogrow
                 outlined
                 placeholder="Write your answer"
+                :disable="reviewMode || quizExpired"
                 :rules="[(value) => Boolean(value?.trim()) || 'Answer this question']"
               />
+              <div v-if="reviewMode && question.questionType === 'WRITTEN'" class="quiz-review-answer">
+                Your response: {{ answers[question.id] || 'No response' }}
+              </div>
             </div>
             <q-banner v-if="takeError" rounded class="error-banner">{{ takeError }}</q-banner>
+            <q-btn
+              v-if="quizExpired && takeError"
+              color="primary"
+              unelevated
+              no-caps
+              label="Retry auto-submit"
+              :loading="submitting"
+              @click="submitQuiz(true)"
+            />
           </q-card-section>
           <q-separator />
           <q-card-actions align="right" class="quiz-dialog-actions">
-            <q-btn flat no-caps label="Cancel" v-close-popup />
             <q-btn
+              v-if="reviewMode"
+              flat
+              no-caps
+              label="Close"
+              v-close-popup
+            />
+            <q-btn
+              v-if="!reviewMode && !quizExpired"
               color="primary"
               unelevated
               no-caps
@@ -395,9 +484,9 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useQuasar } from 'quasar'
-import { apiRequest } from '@/services/api'
+import { apiRequest, downloadFile } from '@/services/api'
 import { useAuthStore } from '@/stores/auth-store'
 
 const auth = useAuthStore()
@@ -425,8 +514,15 @@ const quizForm = reactive({
 const takeDialogOpen = ref(false)
 const selectedQuiz = ref(null)
 const answers = reactive({})
+const imageSources = reactive({})
+const imageErrors = reactive({})
 const submitting = ref(false)
 const takeError = ref('')
+const remainingSeconds = ref(0)
+const quizExpired = ref(false)
+const reviewMode = ref(false)
+let countdownInterval = null
+let timeoutSubmissionPending = false
 const attemptsDialogOpen = ref(false)
 const attempts = ref([])
 const gradeForms = reactive({})
@@ -434,6 +530,11 @@ const attemptErrors = reactive({})
 const gradingAttemptId = ref(null)
 
 onMounted(loadPage)
+onBeforeUnmount(() => {
+  stopCountdown()
+  clearQuestionImages()
+  clearQuizFormImages()
+})
 
 async function loadPage() {
   loading.value = true
@@ -464,6 +565,7 @@ function openCreateDialog() {
   quizForm.description = ''
   quizForm.opensAt = toDateTimeInput(new Date())
   quizForm.closesAt = toDateTimeInput(new Date(Date.now() + 60 * 60 * 1000))
+  clearQuizFormImages()
   quizForm.questions.splice(0, quizForm.questions.length, newQuestion())
   createDialogOpen.value = true
 }
@@ -479,7 +581,78 @@ function newQuestion() {
     questionType: 'WRITTEN',
     options: ['', '', '', ''],
     correctOptionIndex: 0,
+    imageFile: null,
+    imageUrl: null,
+    imagePreview: null,
+    imageUploading: false,
   }
+}
+
+async function uploadQuestionImage(question, file) {
+  if (!file) {
+    if (question.imagePreview) URL.revokeObjectURL(question.imagePreview)
+    question.imagePreview = null
+    question.imageUrl = null
+    return
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    createError.value = 'Choose an image under 10 MB.'
+    return
+  }
+  if (question.imagePreview) URL.revokeObjectURL(question.imagePreview)
+  question.imagePreview = URL.createObjectURL(file)
+  question.imageUrl = null
+  question.imageUploading = true
+  createError.value = ''
+  try {
+    const body = new FormData()
+    body.append('file', file)
+    const uploaded = await apiRequest('/quizzes/images', {
+      method: 'POST',
+      token: auth.token,
+      body,
+    })
+    if (question.imageFile === file) question.imageUrl = uploaded.imageUrl
+  } catch (error) {
+    createError.value = error.message || 'Could not upload this quiz image.'
+    handleUnauthorized(error)
+  } finally {
+    question.imageUploading = false
+  }
+}
+
+function clearQuizFormImages() {
+  quizForm.questions.forEach((question) => {
+    if (question.imagePreview) URL.revokeObjectURL(question.imagePreview)
+  })
+}
+
+function removeQuestion(index) {
+  const [question] = quizForm.questions.splice(index, 1)
+  if (question.imagePreview) URL.revokeObjectURL(question.imagePreview)
+}
+
+function clearQuestionImages() {
+  Object.values(imageSources).forEach((url) => URL.revokeObjectURL(url))
+  Object.keys(imageSources).forEach((key) => delete imageSources[key])
+  Object.keys(imageErrors).forEach((key) => delete imageErrors[key])
+}
+
+async function loadQuestionImages(questions) {
+  clearQuestionImages()
+  await Promise.all(
+    questions
+      .filter((question) => question.imageUrl)
+      .map(async (question) => {
+        try {
+          const blob = await downloadFile(question.imageUrl, { token: auth.token })
+          imageSources[question.id] = URL.createObjectURL(blob)
+        } catch (error) {
+          imageErrors[question.id] = error.message || 'Could not load this question image.'
+          handleUnauthorized(error)
+        }
+      }),
+  )
 }
 
 function onQuestionTypeChange(question) {
@@ -502,6 +675,7 @@ async function createQuiz() {
   createError.value = ''
   if (
     !quizForm.questions.length ||
+    quizForm.questions.some((question) => question.imageUploading || (question.imageFile && !question.imageUrl)) ||
     quizForm.questions.some((question) => {
       if (!question.prompt.trim()) return true
       if (question.questionType !== 'MULTIPLE_CHOICE') return false
@@ -535,6 +709,7 @@ async function createQuiz() {
           prompt: question.prompt,
           maxPoints: Number(question.maxPoints),
           questionType: question.questionType,
+          imageUrl: question.imageUrl || null,
           ...(question.questionType === 'MULTIPLE_CHOICE'
             ? {
                 options: question.options.map((option) => option.trim()),
@@ -557,13 +732,21 @@ async function createQuiz() {
 
 async function openQuiz(quiz) {
   takeError.value = ''
+  reviewMode.value = false
+  quizExpired.value = false
   try {
     selectedQuiz.value = await apiRequest(`/quizzes/${quiz.id}`, { token: auth.token })
+    if (!selectedQuiz.value.questions?.length) {
+      throw new Error('Quiz questions are not available yet. Check the quiz opening time.')
+    }
+    await loadQuestionImages(selectedQuiz.value.questions)
     Object.keys(answers).forEach((key) => delete answers[key])
     selectedQuiz.value.questions.forEach((question) => {
       answers[question.id] = question.questionType === 'MULTIPLE_CHOICE' ? null : ''
     })
     takeDialogOpen.value = true
+    updateRemainingTime()
+    countdownInterval = setInterval(updateRemainingTime, 250)
   } catch (error) {
     $q.notify({
       type: 'negative',
@@ -574,10 +757,40 @@ async function openQuiz(quiz) {
   }
 }
 
-async function submitQuiz() {
-  if (!selectedQuiz.value) return
+async function openReview(quiz) {
   takeError.value = ''
-  const unanswered = selectedQuiz.value.questions.some((question) => {
+  reviewMode.value = true
+  stopCountdown()
+  try {
+    selectedQuiz.value = await apiRequest(`/quizzes/${quiz.id}`, { token: auth.token })
+    await loadQuestionImages(selectedQuiz.value.questions || [])
+    Object.keys(answers).forEach((key) => delete answers[key])
+    selectedQuiz.value.questions.forEach((question) => {
+      const answer = selectedQuiz.value.myAnswers?.find((row) => row.questionId === question.id)
+      answers[question.id] =
+        question.questionType === 'MULTIPLE_CHOICE'
+          ? (answer?.selectedOptionId ?? null)
+          : answer?.responseText || ''
+    })
+    takeDialogOpen.value = true
+  } catch (error) {
+    $q.notify({
+      type: 'negative',
+      message: error.message || 'Could not load quiz answers.',
+      position: 'top-right',
+    })
+    handleUnauthorized(error)
+  }
+}
+
+async function submitQuiz(timedOut = false) {
+  if (!selectedQuiz.value) return
+  if (submitting.value) {
+    if (timedOut) timeoutSubmissionPending = true
+    return
+  }
+  takeError.value = ''
+  const unanswered = !timedOut && selectedQuiz.value.questions.some((question) => {
     const answer = answers[question.id]
     return question.questionType === 'MULTIPLE_CHOICE'
       ? answer === null || answer === undefined
@@ -593,6 +806,7 @@ async function submitQuiz() {
       method: 'POST',
       token: auth.token,
       body: {
+        timedOut,
         answers: selectedQuiz.value.questions.map((question) => ({
           questionId: question.id,
           ...(question.questionType === 'MULTIPLE_CHOICE'
@@ -601,15 +815,57 @@ async function submitQuiz() {
         })),
       },
     })
+    stopCountdown()
     takeDialogOpen.value = false
-    $q.notify({ type: 'positive', message: 'Quiz submitted', position: 'top-right' })
+    $q.notify({
+      type: 'positive',
+      message: timedOut ? 'Time elapsed — your quiz was submitted.' : 'Quiz submitted',
+      position: 'top-right',
+    })
     await loadPage()
   } catch (error) {
     takeError.value = error.message || 'Could not submit the quiz.'
     handleUnauthorized(error)
   } finally {
     submitting.value = false
+    if (timeoutSubmissionPending && takeDialogOpen.value) {
+      timeoutSubmissionPending = false
+      await submitQuiz(true)
+    }
   }
+}
+
+function updateRemainingTime() {
+  if (!selectedQuiz.value || reviewMode.value) return
+  const deadline = new Date(selectedQuiz.value.closesAt).getTime()
+  remainingSeconds.value = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
+  if (remainingSeconds.value === 0 && !quizExpired.value) {
+    quizExpired.value = true
+    stopCountdown()
+    submitQuiz(true)
+  }
+}
+
+function stopCountdown() {
+  if (countdownInterval) {
+    clearInterval(countdownInterval)
+    countdownInterval = null
+  }
+}
+
+function formatRemainingTime(seconds) {
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
+}
+
+function optionLabel(question, option) {
+  const isCorrect = reviewMode.value && question.correctOptionId === option.id
+  const isSelected = reviewMode.value && answers[question.id] === option.id
+  if (isCorrect && isSelected) return `${option.text} — Your answer (correct)`
+  if (isCorrect) return `${option.text} — Correct answer`
+  if (isSelected) return `${option.text} — Your answer`
+  return option.text
 }
 
 async function openAttempts(quiz) {

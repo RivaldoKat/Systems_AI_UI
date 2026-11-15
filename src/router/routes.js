@@ -11,6 +11,7 @@ const routes = [
     children: [
       { path: '', redirect: '/app/overview' },
       { path: 'app/quizzes', component: () => import('@/pages/QuizzesPage.vue') },
+      { path: 'app/notes', component: () => import('@/pages/CourseNotesPage.vue') },
       { path: 'app/:section', component: () => import('@/pages/ManagementPage.vue') },
     ],
   },

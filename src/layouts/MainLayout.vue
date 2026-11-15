@@ -42,6 +42,16 @@
             <strong>{{ auth.user?.email }}</strong>
             <span>{{ roleLabel }}</span>
           </div>
+          <q-btn
+            flat
+            round
+            dense
+            icon="key"
+            aria-label="Change password"
+            @click="openPasswordDialog"
+          >
+            <q-tooltip>Change password</q-tooltip>
+          </q-btn>
           <q-btn flat round dense icon="logout" aria-label="Sign out" @click="signOut">
             <q-tooltip>Sign out</q-tooltip>
           </q-btn>
@@ -208,16 +218,69 @@
     <q-page-container>
       <router-view />
     </q-page-container>
+
+    <q-dialog v-model="passwordDialogOpen" persistent>
+      <q-card class="password-dialog">
+        <q-form @submit.prevent="changePassword">
+          <q-card-section>
+            <div class="page-eyebrow">ACCOUNT SECURITY</div>
+            <h2>Change password</h2>
+          </q-card-section>
+          <q-card-section class="password-dialog-fields">
+            <q-input
+              v-model="passwordForm.currentPassword"
+              label="Current password"
+              type="password"
+              outlined
+              autocomplete="current-password"
+              :rules="[(value) => Boolean(value) || 'Enter your current password']"
+            />
+            <q-input
+              v-model="passwordForm.newPassword"
+              label="New password"
+              type="password"
+              outlined
+              autocomplete="new-password"
+              :rules="[(value) => (value?.length >= 8) || 'Use at least 8 characters']"
+            />
+            <q-input
+              v-model="passwordForm.confirmPassword"
+              label="Confirm new password"
+              type="password"
+              outlined
+              autocomplete="new-password"
+              :rules="[(value) => value === passwordForm.newPassword || 'Passwords do not match']"
+            />
+            <q-banner v-if="passwordError" rounded class="error-banner">
+              {{ passwordError }}
+            </q-banner>
+          </q-card-section>
+          <q-card-actions align="right">
+            <q-btn flat no-caps label="Cancel" v-close-popup />
+            <q-btn
+              color="primary"
+              unelevated
+              no-caps
+              type="submit"
+              label="Update password"
+              :loading="changingPassword"
+            />
+          </q-card-actions>
+        </q-form>
+      </q-card>
+    </q-dialog>
   </q-layout>
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useQuasar } from 'quasar'
 import { apiRequest } from '@/services/api'
 import { useAuthStore } from '@/stores/auth-store'
 
 const auth = useAuthStore()
+const $q = useQuasar()
 const route = useRoute()
 const router = useRouter()
 const drawerOpen = ref(true)
@@ -227,10 +290,15 @@ const recentAnnouncements = ref([])
 const recentGrades = ref([])
 const activityLoading = ref(false)
 const activityError = ref('')
+const passwordDialogOpen = ref(false)
+const changingPassword = ref(false)
+const passwordError = ref('')
+const passwordForm = reactive({ currentPassword: '', newPassword: '', confirmPassword: '' })
 
 const baseItems = [
   { section: 'overview', label: 'Overview', icon: 'space_dashboard' },
   { section: 'courses', label: 'Courses', icon: 'auto_stories' },
+  { section: 'notes', label: 'Course notes', icon: 'menu_book' },
   { section: 'assignments', label: 'Assignments', icon: 'assignment' },
   { section: 'quizzes', label: 'Quizzes', icon: 'quiz' },
   { section: 'announcements', label: 'Announcements', icon: 'campaign' },
@@ -241,7 +309,7 @@ const baseItems = [
 const navItems = computed(() => {
   if (auth.role === 'LEARNER') {
     return baseItems.filter((item) =>
-      ['overview', 'courses', 'assignments', 'quizzes', 'announcements', 'submissions'].includes(
+      ['overview', 'courses', 'notes', 'assignments', 'quizzes', 'announcements', 'submissions'].includes(
         item.section,
       ),
     )
@@ -260,7 +328,9 @@ const titleBySection = Object.fromEntries(
   ]),
 )
 const currentSection = computed(
-  () => route.params.section || (route.path === '/app/quizzes' ? 'quizzes' : null),
+  () =>
+    route.params.section ||
+    (route.path === '/app/quizzes' ? 'quizzes' : route.path === '/app/notes' ? 'notes' : null),
 )
 const currentTitle = computed(() => titleBySection[currentSection.value] || 'Overview')
 const activityCount = computed(
@@ -361,5 +431,42 @@ async function loadRecentActivity() {
 function signOut() {
   auth.logout()
   router.push('/login')
+}
+
+function openPasswordDialog() {
+  passwordError.value = ''
+  passwordForm.currentPassword = ''
+  passwordForm.newPassword = ''
+  passwordForm.confirmPassword = ''
+  passwordDialogOpen.value = true
+}
+
+async function changePassword() {
+  passwordError.value = ''
+  if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+    passwordError.value = 'New passwords do not match.'
+    return
+  }
+  changingPassword.value = true
+  try {
+    await apiRequest('/auth/password', {
+      method: 'PUT',
+      token: auth.token,
+      body: {
+        currentPassword: passwordForm.currentPassword,
+        newPassword: passwordForm.newPassword,
+      },
+    })
+    passwordDialogOpen.value = false
+    $q.notify({ type: 'positive', message: 'Password updated', position: 'top-right' })
+  } catch (error) {
+    passwordError.value = error.message || 'Could not update your password.'
+    if (error.status === 401) {
+      auth.logout()
+      router.push('/login')
+    }
+  } finally {
+    changingPassword.value = false
+  }
 }
 </script>
