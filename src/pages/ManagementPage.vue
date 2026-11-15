@@ -165,14 +165,16 @@
         <div class="filter-caption"><q-icon name="tune" /> COURSE FILTER</div>
         <q-select
           v-model="selectedCourseId"
-          :options="courseOptions"
+          :options="courseSelectOptions"
           option-value="id"
-          option-label="name"
+          option-label="label"
           emit-value
           map-options
           outlined
           dense
           clearable
+          use-input
+          input-debounce="0"
           placeholder="Choose a course"
           class="course-filter"
           @update:model-value="onCourseChanged"
@@ -189,15 +191,21 @@
         </template>
         <template v-else>
           <div class="filter-caption"><q-icon name="person_search" /> LEARNER</div>
-          <q-input
-            v-model.number="studentId"
+          <q-select
+            v-model="selectedLearnerId"
+            :options="learnerSelectOptions"
             outlined
             dense
-            type="number"
-            min="1"
-            placeholder="Enter learner ID"
+            clearable
+            use-input
+            input-debounce="0"
+            emit-value
+            map-options
+            option-label="label"
+            option-value="value"
+            placeholder="Search or choose a learner"
             class="course-filter"
-            @keyup.enter="loadSection"
+            @update:model-value="onLearnerChanged"
           />
           <q-btn
             unelevated
@@ -205,9 +213,10 @@
             icon="search"
             label="Load submissions"
             no-caps
+            :disable="!selectedLearnerId"
             @click="loadSection"
           />
-          <span class="filter-hint">Load submissions for one learner ID at a time.</span>
+          <span class="filter-hint">Choose a learner by name to view their submissions.</span>
         </template>
       </q-card>
 
@@ -343,13 +352,20 @@
             </q-card-section>
             <q-separator />
             <q-card-section class="dialog-fields">
-              <div v-for="field in formFields" :key="field.key" class="dialog-field">
+              <div
+                v-for="field in formFields"
+                :key="field.key"
+                class="dialog-field"
+                :class="{ 'dialog-field-wide': field.multiline }"
+              >
                 <label class="field-label">{{ field.label }}</label>
                 <q-select
                   v-if="field.options"
                   v-model="form[field.key]"
                   :options="field.options"
                   :label="field.placeholder"
+                  use-input
+                  input-debounce="0"
                   :rules="
                     field.required
                       ? [
@@ -367,7 +383,7 @@
                 <q-input
                   v-else
                   v-model="form[field.key]"
-                  :type="field.type || 'text'"
+                  :type="field.multiline ? 'textarea' : field.type || 'text'"
                   :placeholder="field.placeholder || field.label"
                   :rules="
                     field.required
@@ -473,7 +489,7 @@ const courseOptions = ref([])
 const peopleOptions = ref([])
 const learnerOptions = ref([])
 const selectedCourseId = ref(null)
-const studentId = ref(null)
+const selectedLearnerId = ref(null)
 const totalElements = ref(0)
 const search = ref('')
 const dialogOpen = ref(false)
@@ -645,6 +661,18 @@ const canDelete = computed(
     ['announcements', 'assignments', 'attendance', 'enrollments'].includes(section.value),
 )
 const formFields = computed(() => getFormFields())
+const courseSelectOptions = computed(() =>
+  courseOptions.value.map((course) => ({
+    ...course,
+    label: `${course.name} · ${course.code}`,
+  })),
+)
+const learnerSelectOptions = computed(() =>
+  learnerOptions.value.map((person) => ({
+    label: `${person.firstName} ${person.lastName}${person.email ? ` · ${person.email}` : ''}`,
+    value: person.id,
+  })),
+)
 const filteredRows = computed(() => {
   const query = search.value.trim().toLowerCase()
   if (!query) return rows.value
@@ -730,8 +758,8 @@ const quickLinks = computed(() => [
 const emptyMessage = computed(() => {
   if (['attendance', 'enrollments'].includes(section.value) && !selectedCourseId.value)
     return 'Choose a course above to get started.'
-  if (section.value === 'submissions' && !studentId.value)
-    return 'Enter a learner ID above to load their submissions.'
+  if (section.value === 'submissions' && !selectedLearnerId.value)
+    return 'Choose a learner above to load their submissions.'
   return `No ${sectionMeta.value.title.toLowerCase()} found.`
 })
 
@@ -743,7 +771,7 @@ onMounted(async () => {
     handleUnauthorized(error)
     return
   }
-  if (auth.role === 'LEARNER') studentId.value = auth.user.id
+  if (auth.role === 'LEARNER') selectedLearnerId.value = auth.user.id
   await loadOptions()
   if (section.value === 'overview') await loadOverview()
   else await loadSection()
@@ -761,22 +789,14 @@ watch(section, async () => {
 
 async function loadOptions() {
   try {
-    const result = await apiRequest('/courses', {
-      token: auth.token,
-      params: { page: 0, size: 100, sort: 'name,asc' },
-    })
-    courseOptions.value = result.content || []
+    courseOptions.value = await loadAllPages('/courses', 'name,asc')
   } catch (error) {
     pageError.value = error.message || 'Could not load course options.'
     handleUnauthorized(error)
   }
   if (auth.isAdmin) {
     try {
-      const users = await apiRequest('/users', {
-        token: auth.token,
-        params: { page: 0, size: 100 },
-      })
-      peopleOptions.value = users.content || []
+      peopleOptions.value = await loadAllPages('/users')
     } catch (error) {
       pageError.value = error.message || 'Could not load people options.'
       handleUnauthorized(error)
@@ -784,11 +804,7 @@ async function loadOptions() {
   }
   if (auth.isStaff) {
     try {
-      const learners = await apiRequest('/users/learners', {
-        token: auth.token,
-        params: { page: 0, size: 100, sort: 'lastName,asc' },
-      })
-      learnerOptions.value = learners.content || []
+      learnerOptions.value = await loadAllPages('/users/learners', 'lastName,asc')
     } catch (error) {
       pageError.value = error.message || 'Could not load learner options.'
       handleUnauthorized(error)
@@ -796,12 +812,29 @@ async function loadOptions() {
   }
 }
 
+async function loadAllPages(endpoint, sort) {
+  const content = []
+  let page = 0
+  let totalPages = 1
+
+  while (page < totalPages) {
+    const result = await apiRequest(endpoint, {
+      token: auth.token,
+      params: { page, size: 100, ...(sort ? { sort } : {}) },
+    })
+    content.push(...(result.content || []))
+    totalPages = result.totalPages || 0
+    page += 1
+  }
+
+  return content
+}
+
 async function loadOverview() {
   overviewLoading.value = true
   pageError.value = ''
   try {
-    const [courses, announcements, users, assignments] = await Promise.all([
-      apiRequest('/courses', { token: auth.token, params: { page: 0, size: 100 } }),
+    const [announcements, users, assignments] = await Promise.all([
       apiRequest('/announcements/', {
         token: auth.token,
         params: { page: 0, size: 5, sort: 'createdAt,desc' },
@@ -811,11 +844,10 @@ async function loadOverview() {
         : Promise.resolve(null),
       apiRequest('/assignments/count', { token: auth.token }),
     ])
-    overviewCounts.courses = courses.totalElements || 0
+    overviewCounts.courses = courseOptions.value.length
     overviewCounts.announcements = announcements.totalElements || 0
     overviewCounts.people = users?.totalElements || 0
     recentAnnouncements.value = announcements.content || []
-    courseOptions.value = courses.content || []
     overviewCounts.assignments = assignments
   } catch (error) {
     pageError.value = error.message || 'Could not load overview.'
@@ -835,9 +867,9 @@ async function loadSection() {
     return
   }
   if (currentSection === 'submissions' && auth.role === 'LEARNER') {
-    studentId.value = auth.user?.id
+    selectedLearnerId.value = auth.user?.id
   }
-  if (currentSection === 'submissions' && !studentId.value) {
+  if (currentSection === 'submissions' && !selectedLearnerId.value) {
     rows.value = []
     totalElements.value = 0
     pagination.rowsNumber = 0
@@ -855,7 +887,7 @@ async function loadSection() {
     assignments: '/assignments',
     attendance: `/attendance/course/${selectedCourseId.value}`,
     enrollments: `/enrollments/course/${selectedCourseId.value}`,
-    submissions: `/submissions/student/${studentId.value}`,
+    submissions: `/submissions/student/${selectedLearnerId.value}`,
   }
   try {
     const result = await apiRequest(endpoints[currentSection], { token: auth.token, params })
@@ -905,6 +937,13 @@ function onCourseChanged() {
   loadSection()
 }
 
+function onLearnerChanged() {
+  rows.value = []
+  totalElements.value = 0
+  pagination.rowsNumber = 0
+  pagination.page = 1
+}
+
 function navigateToStat(stat) {
   if (stat.section) router.push(`/app/${stat.section}`)
 }
@@ -941,29 +980,29 @@ function getFormFields() {
     key: 'courseId',
     label: 'Course',
     required: true,
-    options: courseOptions.value.map((course) => ({
-      label: `${course.name} · ${course.code}`,
+    options: courseSelectOptions.value.map((course) => ({
+      label: course.label,
       value: course.id,
     })),
   }
-  const personSelect = (role, key = role === 'TEACHER' ? 'teacherId' : 'studentId') => ({
-    key,
-    label: role === 'TEACHER' ? 'Instructor' : 'Learner',
-    required: true,
-    options: (role === 'LEARNER' ? learnerOptions.value : peopleOptions.value)
-      .filter((person) => role === 'LEARNER' || person.role === role)
-      .map((person) => ({
-        label: `${person.firstName} ${person.lastName}${person.email ? ` · ${person.email}` : ''}`,
-        value: person.id,
-      })),
-  })
-  const idField = (key, label) => ({
-    key,
-    label,
-    type: 'number',
-    required: true,
-    placeholder: 'Enter the numeric ID',
-  })
+  const personSelect = (role, key = role === 'TEACHER' ? 'teacherId' : 'studentId') => {
+    const people =
+      role === 'LEARNER'
+        ? learnerSelectOptions.value
+        : peopleOptions.value
+            .filter((person) => person.role === role)
+            .map((person) => ({
+              label: `${person.firstName} ${person.lastName}${person.email ? ` · ${person.email}` : ''}`,
+              value: person.id,
+            }))
+
+    return {
+      key,
+      label: role === 'TEACHER' ? 'Instructor' : 'Learner',
+      required: true,
+      options: people,
+    }
+  }
   const gradeSelect = {
     key: 'grade',
     label: 'Grade level',
@@ -1003,7 +1042,7 @@ function getFormFields() {
       enrollments: [courseSelect, personSelect('LEARNER'), gradeSelect],
       attendance: [
         courseSelect,
-        idField('studentId', 'Learner ID'),
+        personSelect('LEARNER'),
         { key: 'date', label: 'Date', type: 'date', required: true },
         {
           key: 'status',
