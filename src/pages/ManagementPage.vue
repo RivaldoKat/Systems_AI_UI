@@ -411,8 +411,9 @@
                   :min="field.type === 'number' ? 1 : undefined"
                   :step="field.type === 'number' ? 'any' : undefined"
                   :autogrow="field.multiline"
+                  :class="{ 'multiline-input': field.multiline }"
                   outlined
-                  dense
+                  :dense="!field.multiline"
                 />
               </div>
               <div v-if="section === 'assignments'" class="dialog-field dialog-field-wide">

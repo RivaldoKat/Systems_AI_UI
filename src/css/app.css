@@ -716,11 +716,18 @@ input {
   border-radius: 8px;
   font-size: 11px;
 }
-.dialog-field .q-textarea .q-field__native {
-  min-height: 96px;
+.dialog-field .multiline-input.q-textarea .q-field__control,
+.dialog-field .multiline-input .q-field__control-container {
+  height: auto;
+}
+.dialog-field .multiline-input.q-textarea .q-field__native {
+  min-height: 120px;
+  max-height: none;
   line-height: 1.5;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+  overflow-y: hidden;
+  field-sizing: content;
 }
 .attachment-hint {
   margin-top: 6px;
