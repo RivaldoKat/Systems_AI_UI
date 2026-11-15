@@ -257,6 +257,11 @@
               ><q-badge rounded :class="statusClass(props.value)" :label="props.value"
             /></q-td>
           </template>
+          <template #body-cell-content="props">
+            <q-td :props="props">
+              <div class="announcement-message-cell">{{ props.value }}</div>
+            </q-td>
+          </template>
           <template #body-cell-attachmentUrl="props">
             <q-td :props="props">
               <q-btn

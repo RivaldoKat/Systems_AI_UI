@@ -584,6 +584,13 @@ input {
   color: #42526b;
   font-size: 10px;
 }
+.announcement-message-cell {
+  width: min(34vw, 420px);
+  min-width: 220px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
 .q-table tbody tr:hover {
   background: #fafbfe;
 }
