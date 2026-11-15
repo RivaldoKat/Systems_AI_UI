@@ -257,6 +257,21 @@
               ><q-badge rounded :class="statusClass(props.value)" :label="props.value"
             /></q-td>
           </template>
+          <template #body-cell-attachmentUrl="props">
+            <q-td :props="props">
+              <q-btn
+                v-if="props.value"
+                flat
+                dense
+                no-caps
+                icon="download"
+                label="Download"
+                :loading="downloadingAssignmentId === props.row.id"
+                @click="downloadAssignmentAttachment(props.row)"
+              />
+              <span v-else>—</span>
+            </q-td>
+          </template>
           <template #body-cell-role="props">
             <q-td :props="props"><q-badge rounded class="role-badge" :label="props.value" /></q-td>
           </template>
@@ -400,6 +415,22 @@
                   dense
                 />
               </div>
+              <div v-if="section === 'assignments'" class="dialog-field dialog-field-wide">
+                <label class="field-label">Attachment (optional)</label>
+                <q-file
+                  v-model="assignmentFile"
+                  outlined
+                  dense
+                  clearable
+                  accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg"
+                  label="Choose a document or image"
+                >
+                  <template #prepend><q-icon name="attach_file" /></template>
+                </q-file>
+                <div v-if="form.attachmentUrl" class="attachment-hint">
+                  An attachment is already saved. Choose a file to replace it.
+                </div>
+              </div>
               <q-banner v-if="dialogError" rounded class="error-banner">{{ dialogError }}</q-banner>
             </q-card-section>
             <q-separator />
@@ -470,7 +501,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
-import { apiRequest, pageable } from '@/services/api'
+import { apiRequest, downloadFile, pageable } from '@/services/api'
 import { useAuthStore } from '@/stores/auth-store'
 
 const route = useRoute()
@@ -495,11 +526,13 @@ const search = ref('')
 const dialogOpen = ref(false)
 const editing = ref(false)
 const currentRecordId = ref(null)
+const downloadingAssignmentId = ref(null)
 const submissionDialogOpen = ref(false)
 const submitting = ref(false)
 const submissionError = ref('')
 const selectedAssignment = ref(null)
 const submissionFile = ref(null)
+const assignmentFile = ref(null)
 const form = reactive({})
 const pagination = reactive({
   page: 1,
@@ -557,6 +590,7 @@ const meta = {
       { name: 'courseName', label: 'COURSE', field: 'courseName', align: 'left' },
       { name: 'dueDate', label: 'DUE DATE', field: 'dueDate', align: 'left', format: formatDate },
       { name: 'maxScore', label: 'MAX SCORE', field: 'maxScore', align: 'left' },
+      { name: 'attachmentUrl', label: 'ATTACHMENT', field: 'attachmentUrl', align: 'left' },
       { name: 'actions', label: '', field: 'actions', align: 'right' },
     ],
   },
@@ -952,8 +986,10 @@ function openCreate() {
   editing.value = false
   currentRecordId.value = null
   dialogError.value = ''
+  assignmentFile.value = null
   Object.keys(form).forEach((key) => delete form[key])
   for (const field of formFields.value) form[field.key] = field.default ?? ''
+  if (section.value === 'assignments') form.attachmentUrl = ''
   if (
     section.value === 'assignments' ||
     section.value === 'attendance' ||
@@ -969,9 +1005,11 @@ function openEdit(record) {
   editing.value = true
   currentRecordId.value = record.id
   dialogError.value = ''
+  assignmentFile.value = null
   Object.keys(form).forEach((key) => delete form[key])
   const keys = formFields.value.map((field) => field.key)
   for (const key of keys) form[key] = record[key] ?? ''
+  if (section.value === 'assignments') form.attachmentUrl = record.attachmentUrl || ''
   dialogOpen.value = true
 }
 
@@ -1111,6 +1149,29 @@ async function submitAssignment() {
   }
 }
 
+async function downloadAssignmentAttachment(assignment) {
+  downloadingAssignmentId.value = assignment.id
+  try {
+    const file = await downloadFile(assignment.attachmentUrl, { token: auth.token })
+    const extension = assignment.attachmentUrl.match(/\.[a-z0-9]+$/i)?.[0] || ''
+    const objectUrl = URL.createObjectURL(file)
+    const link = document.createElement('a')
+    link.href = objectUrl
+    link.download = `${assignment.title}${extension}`
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+  } catch (error) {
+    $q.notify({
+      type: 'negative',
+      message: error.message || 'Could not download the assignment attachment.',
+      position: 'top-right',
+    })
+    handleUnauthorized(error)
+  } finally {
+    downloadingAssignmentId.value = null
+  }
+}
+
 async function saveRecord() {
   saving.value = true
   dialogError.value = ''
@@ -1128,6 +1189,16 @@ async function saveRecord() {
     if (body[key] !== undefined && body[key] !== '') body[key] = Number(body[key])
   }
   try {
+    if (section.value === 'assignments' && assignmentFile.value) {
+      const formData = new FormData()
+      formData.append('file', assignmentFile.value)
+      const upload = await apiRequest('/submissions/uploads', {
+        method: 'POST',
+        token: auth.token,
+        body: formData,
+      })
+      body.attachmentUrl = upload.fileUrl
+    }
     await apiRequest(editing.value ? `${endpoint}/${currentRecordId.value}` : endpoint, {
       method: editing.value ? 'PUT' : 'POST',
       token: auth.token,

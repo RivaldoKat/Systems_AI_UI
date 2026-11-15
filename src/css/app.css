@@ -722,6 +722,11 @@ input {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+.attachment-hint {
+  margin-top: 6px;
+  color: #78869a;
+  font-size: 11px;
+}
 .dialog-actions {
   padding: 12px 21px;
 }
