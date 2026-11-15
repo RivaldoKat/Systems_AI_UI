@@ -65,8 +65,139 @@
         </div>
         <q-space />
         <div class="today-label">{{ today }}</div>
-        <q-btn flat round dense icon="notifications_none" class="notification-button">
-          <q-badge floating rounded color="orange-5" />
+        <q-btn
+          flat
+          round
+          dense
+          icon="notifications_none"
+          class="notification-button"
+          aria-label="Recent assignments, announcements, and grades"
+        >
+          <q-badge v-if="activityCount" floating rounded color="orange-5" :label="activityCount" />
+          <q-tooltip>Recent activity</q-tooltip>
+          <q-menu
+            anchor="bottom right"
+            self="top right"
+            :offset="[0, 10]"
+            @show="loadRecentActivity"
+          >
+            <q-card class="recent-activity-menu">
+              <q-card-section class="recent-activity-heading">
+                <strong>Recent activity</strong>
+                <span>Assignments, announcements, and grades</span>
+              </q-card-section>
+              <q-banner v-if="activityError" dense class="recent-activity-error">
+                {{ activityError }}
+              </q-banner>
+              <q-inner-loading :showing="activityLoading">
+                <q-spinner-dots color="primary" size="32px" />
+              </q-inner-loading>
+              <template v-if="!activityLoading">
+                <q-separator />
+                <div class="recent-activity-section-title">Assignments</div>
+                <q-list v-if="recentAssignments.length" class="recent-activity-list">
+                  <q-item
+                    v-for="assignment in recentAssignments"
+                    :key="`assignment-${assignment.id}`"
+                    clickable
+                    v-close-popup
+                    to="/app/assignments"
+                    class="recent-activity-item"
+                  >
+                    <q-item-section avatar
+                      ><q-icon name="assignment" color="primary"
+                    /></q-item-section>
+                    <q-item-section>
+                      <q-item-label>{{ assignment.title }}</q-item-label>
+                      <q-item-label caption>
+                        {{ assignment.courseName }} · Due
+                        {{ formatActivityDate(assignment.dueDate) }}
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+                <div v-else class="recent-activity-empty">No assignments to show.</div>
+
+                <q-separator />
+                <div class="recent-activity-section-title">Announcements</div>
+                <q-list v-if="recentAnnouncements.length" class="recent-activity-list">
+                  <q-item
+                    v-for="announcement in recentAnnouncements"
+                    :key="`announcement-${announcement.id}`"
+                    clickable
+                    v-close-popup
+                    to="/app/announcements"
+                    class="recent-activity-item"
+                  >
+                    <q-item-section avatar
+                      ><q-icon name="campaign" color="primary"
+                    /></q-item-section>
+                    <q-item-section>
+                      <q-item-label>{{ announcement.title }}</q-item-label>
+                      <q-item-label caption>
+                        {{ announcement.courseName || 'School-wide' }} ·
+                        {{ formatActivityDate(announcement.createdAt) }}
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+                <div v-else class="recent-activity-empty">No announcements to show.</div>
+
+                <q-separator />
+                <div class="recent-activity-section-title">Grades</div>
+                <q-list v-if="recentGrades.length" class="recent-activity-list">
+                  <q-item
+                    v-for="grade in recentGrades"
+                    :key="`grade-${grade.id}`"
+                    class="recent-activity-item"
+                  >
+                    <q-item-section avatar
+                      ><q-icon name="task_alt" color="positive"
+                    /></q-item-section>
+                    <q-item-section>
+                      <q-item-label>{{ grade.assignmentTitle }}</q-item-label>
+                      <q-item-label caption>
+                        <template v-if="auth.role !== 'LEARNER'"
+                          >{{ grade.studentName }} ·
+                        </template>
+                        Grade: {{ grade.grade ?? '—' }} ·
+                        {{ formatActivityDate(grade.gradedAt) }}
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+                <div v-else class="recent-activity-empty">No graded work to show.</div>
+
+                <q-separator />
+                <div class="recent-activity-section-title">Recently visited</div>
+                <q-list v-if="recentVisits.length" class="recent-activity-list">
+                  <q-item
+                    v-for="visit in recentVisits"
+                    :key="`visit-${visit.section}`"
+                    clickable
+                    v-close-popup
+                    :to="`/app/${visit.section}`"
+                    class="recent-activity-item"
+                  >
+                    <q-item-section avatar>
+                      <q-icon :name="visit.icon" color="primary" />
+                    </q-item-section>
+                    <q-item-section>
+                      <q-item-label>{{ visit.label }}</q-item-label>
+                      <q-item-label caption>{{ formatVisitTime(visit.visitedAt) }}</q-item-label>
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+                <div v-else class="recent-activity-empty">Visited pages will appear here.</div>
+                <div
+                  v-if="!activityError && !activityCount"
+                  class="recent-activity-empty recent-activity-empty-all"
+                >
+                  Recent activity will appear here as items are added or graded.
+                </div>
+              </template>
+            </q-card>
+          </q-menu>
         </q-btn>
         <q-avatar color="blue-1" text-color="primary" size="34px" class="gt-xs">{{
           initials
@@ -81,14 +212,21 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { apiRequest } from '@/services/api'
 import { useAuthStore } from '@/stores/auth-store'
 
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 const drawerOpen = ref(true)
+const recentVisits = ref(readRecentVisits())
+const recentAssignments = ref([])
+const recentAnnouncements = ref([])
+const recentGrades = ref([])
+const activityLoading = ref(false)
+const activityError = ref('')
 
 const baseItems = [
   { section: 'overview', label: 'Overview', icon: 'space_dashboard' },
@@ -116,6 +254,13 @@ const titleBySection = Object.fromEntries(
   ]),
 )
 const currentTitle = computed(() => titleBySection[route.params.section] || 'Overview')
+const activityCount = computed(
+  () =>
+    recentAssignments.value.length + recentAnnouncements.value.length + recentGrades.value.length,
+)
+const recentVisitsStorageKey = computed(
+  () => `luma-recent-visits:${auth.user?.id || auth.user?.email || 'user'}`,
+)
 const roleLabel = computed(() =>
   auth.role.toLowerCase().replace(/^./, (letter) => letter.toUpperCase()),
 )
@@ -125,6 +270,84 @@ const today = new Intl.DateTimeFormat('en', {
   month: 'long',
   day: 'numeric',
 }).format(new Date())
+
+watch(
+  () => route.params.section,
+  (section) => {
+    const item = navItems.value.find((navItem) => navItem.section === section)
+    if (!item) return
+
+    const visits = [
+      {
+        section: item.section,
+        label: item.label,
+        icon: item.icon,
+        visitedAt: new Date().toISOString(),
+      },
+      ...recentVisits.value.filter((visit) => visit.section !== item.section),
+    ].slice(0, 5)
+    recentVisits.value = visits
+    localStorage.setItem(recentVisitsStorageKey.value, JSON.stringify(visits))
+  },
+  { immediate: true },
+)
+
+function readRecentVisits() {
+  try {
+    const visits = JSON.parse(
+      localStorage.getItem(`luma-recent-visits:${auth.user?.id || auth.user?.email || 'user'}`) ||
+        '[]',
+    )
+    return Array.isArray(visits) ? visits : []
+  } catch {
+    return []
+  }
+}
+
+function formatVisitTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
+    date,
+  )
+}
+
+function formatActivityDate(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Date unavailable'
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date)
+}
+
+async function loadRecentActivity() {
+  activityLoading.value = true
+  activityError.value = ''
+  const results = await Promise.allSettled([
+    apiRequest('/assignments', {
+      token: auth.token,
+      params: { page: 0, size: 4, sort: 'dueDate,asc' },
+    }),
+    apiRequest('/announcements/', {
+      token: auth.token,
+      params: { page: 0, size: 4, sort: 'createdAt,desc' },
+    }),
+    apiRequest('/submissions/recent', {
+      token: auth.token,
+      params: { page: 0, size: 4, sort: 'gradedAt,desc' },
+    }),
+  ])
+  const [assignments, announcements, grades] = results
+  recentAssignments.value =
+    assignments.status === 'fulfilled' ? assignments.value.content || [] : []
+  recentAnnouncements.value =
+    announcements.status === 'fulfilled' ? announcements.value.content || [] : []
+  recentGrades.value = grades.status === 'fulfilled' ? grades.value.content || [] : []
+
+  const failures = results.flatMap((result, index) =>
+    result.status === 'rejected' ? [['assignments', 'announcements', 'grades'][index]] : [],
+  )
+  if (failures.length) activityError.value = `Could not load recent ${failures.join(', ')}.`
+  activityLoading.value = false
+}
 
 function signOut() {
   auth.logout()
