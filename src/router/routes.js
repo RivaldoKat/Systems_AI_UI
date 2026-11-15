@@ -10,6 +10,7 @@ const routes = [
     meta: { requiresAuth: true },
     children: [
       { path: '', redirect: '/app/overview' },
+      { path: 'app/quizzes', component: () => import('@/pages/QuizzesPage.vue') },
       { path: 'app/:section', component: () => import('@/pages/ManagementPage.vue') },
     ],
   },

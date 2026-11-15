@@ -232,6 +232,7 @@ const baseItems = [
   { section: 'overview', label: 'Overview', icon: 'space_dashboard' },
   { section: 'courses', label: 'Courses', icon: 'auto_stories' },
   { section: 'assignments', label: 'Assignments', icon: 'assignment' },
+  { section: 'quizzes', label: 'Quizzes', icon: 'quiz' },
   { section: 'announcements', label: 'Announcements', icon: 'campaign' },
   { section: 'enrollments', label: 'Enrollments', icon: 'groups' },
   { section: 'attendance', label: 'Attendance', icon: 'fact_check' },
@@ -240,12 +241,17 @@ const baseItems = [
 const navItems = computed(() => {
   if (auth.role === 'LEARNER') {
     return baseItems.filter((item) =>
-      ['overview', 'courses', 'assignments', 'announcements', 'submissions'].includes(item.section),
+      ['overview', 'courses', 'assignments', 'quizzes', 'announcements', 'submissions'].includes(
+        item.section,
+      ),
     )
   }
+  const items = baseItems.filter(
+    (item) => item.section !== 'users' && !(auth.role === 'PARENT' && item.section === 'quizzes'),
+  )
   return auth.isAdmin
-    ? [...baseItems, { section: 'users', label: 'People', icon: 'people_alt' }]
-    : baseItems.filter((item) => item.section !== 'users')
+    ? [...items, { section: 'users', label: 'People', icon: 'people_alt' }]
+    : items
 })
 const titleBySection = Object.fromEntries(
   [...baseItems, { section: 'users', label: 'People' }].map(({ section, label }) => [
@@ -253,7 +259,10 @@ const titleBySection = Object.fromEntries(
     label,
   ]),
 )
-const currentTitle = computed(() => titleBySection[route.params.section] || 'Overview')
+const currentSection = computed(
+  () => route.params.section || (route.path === '/app/quizzes' ? 'quizzes' : null),
+)
+const currentTitle = computed(() => titleBySection[currentSection.value] || 'Overview')
 const activityCount = computed(
   () =>
     recentAssignments.value.length + recentAnnouncements.value.length + recentGrades.value.length,
@@ -272,7 +281,7 @@ const today = new Intl.DateTimeFormat('en', {
 }).format(new Date())
 
 watch(
-  () => route.params.section,
+  () => currentSection.value,
   (section) => {
     const item = navItems.value.find((navItem) => navItem.section === section)
     if (!item) return
