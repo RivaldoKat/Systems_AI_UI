@@ -55,7 +55,7 @@
                 v-if="quiz.myAttemptStatus === 'SUBMITTED'"
                 flat
                 no-caps
-                label="Submitted — awaiting grade"
+                :label="learnerSubmissionLabel(quiz)"
                 disable
               />
               <q-btn
@@ -141,7 +141,7 @@
               />
             </div>
             <div class="quiz-questions-heading">
-              <strong>Written-response questions</strong>
+              <strong>Questions</strong>
               <q-btn flat dense no-caps icon="add" label="Add question" @click="addQuestion" />
             </div>
             <div
@@ -149,33 +149,83 @@
               :key="index"
               class="quiz-question-editor"
             >
-              <q-input
-                v-model="question.prompt"
-                :label="`Question ${index + 1}`"
-                type="textarea"
-                autogrow
-                outlined
-                :rules="[(value) => Boolean(value?.trim()) || 'Enter a question']"
-              />
-              <q-input
-                v-model.number="question.maxPoints"
-                label="Points"
-                type="number"
-                min="1"
-                step="any"
-                outlined
-                :rules="[(value) => Number(value) > 0 || 'Points must be greater than zero']"
-              />
-              <q-btn
-                v-if="quizForm.questions.length > 1"
-                flat
-                round
-                dense
-                color="negative"
-                icon="delete_outline"
-                aria-label="Remove question"
-                @click="quizForm.questions.splice(index, 1)"
-              />
+              <div class="quiz-question-fields">
+                <q-input
+                  v-model="question.prompt"
+                  :label="`Question ${index + 1}`"
+                  type="textarea"
+                  autogrow
+                  outlined
+                  :rules="[(value) => Boolean(value?.trim()) || 'Enter a question']"
+                />
+                <q-select
+                  v-model="question.questionType"
+                  :options="questionTypes"
+                  label="Question type"
+                  outlined
+                  emit-value
+                  map-options
+                  @update:model-value="onQuestionTypeChange(question)"
+                />
+                <q-input
+                  v-model.number="question.maxPoints"
+                  label="Points"
+                  type="number"
+                  min="1"
+                  step="any"
+                  outlined
+                  :rules="[(value) => Number(value) > 0 || 'Points must be greater than zero']"
+                />
+                <q-btn
+                  v-if="quizForm.questions.length > 1"
+                  flat
+                  round
+                  dense
+                  color="negative"
+                  icon="delete_outline"
+                  aria-label="Remove question"
+                  @click="quizForm.questions.splice(index, 1)"
+                />
+              </div>
+              <div v-if="question.questionType === 'MULTIPLE_CHOICE'" class="quiz-option-editor">
+                <div
+                  v-for="(option, optionIndex) in question.options"
+                  :key="optionIndex"
+                  class="quiz-option-row"
+                >
+                  <q-radio
+                    v-model="question.correctOptionIndex"
+                    :val="optionIndex"
+                    :label="`Correct`"
+                    color="positive"
+                  />
+                  <q-input
+                    v-model="question.options[optionIndex]"
+                    :label="`Option ${optionIndex + 1}`"
+                    outlined
+                    dense
+                    :rules="[(value) => Boolean(value?.trim()) || 'Enter an option']"
+                  />
+                  <q-btn
+                    v-if="question.options.length > 2"
+                    flat
+                    round
+                    dense
+                    color="negative"
+                    icon="close"
+                    aria-label="Remove option"
+                    @click="removeOption(question, optionIndex)"
+                  />
+                </div>
+                <q-btn
+                  flat
+                  dense
+                  no-caps
+                  icon="add"
+                  label="Add answer option"
+                  @click="question.options.push('')"
+                />
+              </div>
             </div>
             <q-banner v-if="createError" rounded class="error-banner">{{ createError }}</q-banner>
           </q-card-section>
@@ -217,7 +267,15 @@
                 >Question {{ index + 1 }} <span>{{ question.maxPoints }} points</span></label
               >
               <p>{{ question.prompt }}</p>
+              <q-option-group
+                v-if="question.questionType === 'MULTIPLE_CHOICE'"
+                v-model="answers[question.id]"
+                :options="question.options.map((option) => ({ label: option.text, value: option.id }))"
+                type="radio"
+                color="primary"
+              />
               <q-input
+                v-else
                 v-model="answers[question.id]"
                 type="textarea"
                 autogrow
@@ -280,18 +338,29 @@
                 <strong
                   >Q{{ index + 1 }} · {{ answer.prompt }} ({{ answer.maxPoints }} points)</strong
                 >
-                <p>{{ answer.responseText }}</p>
+                <p v-if="answer.questionType === 'MULTIPLE_CHOICE'">
+                  Selected: {{ answer.selectedOptionText || 'No selection' }}
+                  <span v-if="answer.correctOptionText">
+                    · Correct: {{ answer.correctOptionText }}
+                    · {{ answer.selectedOptionId === answer.correctOptionId ? 'Correct' : 'Incorrect' }}
+                  </span>
+                </p>
+                <p v-else>{{ answer.responseText }}</p>
               </div>
               <div v-if="attempt.status === 'GRADED'" class="graded-result">
                 Grade: {{ attempt.grade }} / {{ selectedQuiz?.totalPoints }}
+                <span v-if="attempt.answers.some((answer) => answer.questionType === 'MULTIPLE_CHOICE')">
+                  · Auto-scored {{ attempt.autoGradedPoints }} points
+                </span>
                 <p v-if="attempt.feedback">{{ attempt.feedback }}</p>
               </div>
               <div v-else class="grade-form">
+                <p>Auto-scored {{ attempt.autoGradedPoints }} points. Enter the final score.</p>
                 <q-input
                   v-model.number="gradeForms[attempt.id].grade"
                   label="Grade"
                   type="number"
-                  min="0"
+                  :min="attempt.autoGradedPoints"
                   :max="selectedQuiz?.totalPoints"
                   step="any"
                   outlined
@@ -341,13 +410,17 @@ const pageError = ref('')
 const createDialogOpen = ref(false)
 const creating = ref(false)
 const createError = ref('')
+const questionTypes = [
+  { label: 'Written response', value: 'WRITTEN' },
+  { label: 'Multiple choice', value: 'MULTIPLE_CHOICE' },
+]
 const quizForm = reactive({
   courseId: null,
   title: '',
   description: '',
   opensAt: toDateTimeInput(new Date()),
   closesAt: toDateTimeInput(new Date(Date.now() + 60 * 60 * 1000)),
-  questions: [{ prompt: '', maxPoints: 10 }],
+  questions: [newQuestion()],
 })
 const takeDialogOpen = ref(false)
 const selectedQuiz = ref(null)
@@ -391,21 +464,58 @@ function openCreateDialog() {
   quizForm.description = ''
   quizForm.opensAt = toDateTimeInput(new Date())
   quizForm.closesAt = toDateTimeInput(new Date(Date.now() + 60 * 60 * 1000))
-  quizForm.questions.splice(0, quizForm.questions.length, { prompt: '', maxPoints: 10 })
+  quizForm.questions.splice(0, quizForm.questions.length, newQuestion())
   createDialogOpen.value = true
 }
 
 function addQuestion() {
-  quizForm.questions.push({ prompt: '', maxPoints: 10 })
+  quizForm.questions.push(newQuestion())
+}
+
+function newQuestion() {
+  return {
+    prompt: '',
+    maxPoints: 10,
+    questionType: 'WRITTEN',
+    options: ['', '', '', ''],
+    correctOptionIndex: 0,
+  }
+}
+
+function onQuestionTypeChange(question) {
+  if (question.questionType === 'MULTIPLE_CHOICE' && question.options.length < 2) {
+    question.options = ['', '', '', '']
+    question.correctOptionIndex = 0
+  }
+}
+
+function removeOption(question, index) {
+  question.options.splice(index, 1)
+  if (question.correctOptionIndex === index) {
+    question.correctOptionIndex = 0
+  } else if (question.correctOptionIndex > index) {
+    question.correctOptionIndex -= 1
+  }
 }
 
 async function createQuiz() {
   createError.value = ''
   if (
     !quizForm.questions.length ||
-    quizForm.questions.some((question) => !question.prompt.trim())
+    quizForm.questions.some((question) => {
+      if (!question.prompt.trim()) return true
+      if (question.questionType !== 'MULTIPLE_CHOICE') return false
+      const options = question.options.map((option) => option.trim().toLowerCase())
+      return (
+        options.length < 2 ||
+        options.some((option) => !option) ||
+        new Set(options).size !== options.length ||
+        question.correctOptionIndex < 0 ||
+        question.correctOptionIndex >= options.length
+      )
+    })
   ) {
-    createError.value = 'Add at least one question and complete every question prompt.'
+    createError.value = 'Complete every question and provide unique options with one correct answer.'
     return
   }
   if (new Date(quizForm.closesAt) <= new Date(quizForm.opensAt)) {
@@ -424,6 +534,13 @@ async function createQuiz() {
         questions: quizForm.questions.map((question) => ({
           prompt: question.prompt,
           maxPoints: Number(question.maxPoints),
+          questionType: question.questionType,
+          ...(question.questionType === 'MULTIPLE_CHOICE'
+            ? {
+                options: question.options.map((option) => option.trim()),
+                correctOptionIndex: question.correctOptionIndex,
+              }
+            : {}),
         })),
       },
     })
@@ -444,7 +561,7 @@ async function openQuiz(quiz) {
     selectedQuiz.value = await apiRequest(`/quizzes/${quiz.id}`, { token: auth.token })
     Object.keys(answers).forEach((key) => delete answers[key])
     selectedQuiz.value.questions.forEach((question) => {
-      answers[question.id] = ''
+      answers[question.id] = question.questionType === 'MULTIPLE_CHOICE' ? null : ''
     })
     takeDialogOpen.value = true
   } catch (error) {
@@ -460,6 +577,16 @@ async function openQuiz(quiz) {
 async function submitQuiz() {
   if (!selectedQuiz.value) return
   takeError.value = ''
+  const unanswered = selectedQuiz.value.questions.some((question) => {
+    const answer = answers[question.id]
+    return question.questionType === 'MULTIPLE_CHOICE'
+      ? answer === null || answer === undefined
+      : !answer?.trim()
+  })
+  if (unanswered) {
+    takeError.value = 'Answer every question before submitting.'
+    return
+  }
   submitting.value = true
   try {
     await apiRequest(`/quizzes/${selectedQuiz.value.id}/attempts`, {
@@ -468,7 +595,9 @@ async function submitQuiz() {
       body: {
         answers: selectedQuiz.value.questions.map((question) => ({
           questionId: question.id,
-          responseText: answers[question.id],
+          ...(question.questionType === 'MULTIPLE_CHOICE'
+            ? { selectedOptionId: answers[question.id] }
+            : { responseText: answers[question.id] }),
         })),
       },
     })
@@ -514,10 +643,11 @@ async function gradeAttempt(attempt) {
     form.grade === '' ||
     form.grade === null ||
     !Number.isFinite(grade) ||
-    grade < 0 ||
+    grade < attempt.autoGradedPoints ||
     grade > selectedQuiz.value.totalPoints
   ) {
-    attemptErrors[attempt.id] = `Enter a grade from 0 to ${selectedQuiz.value.totalPoints}.`
+    attemptErrors[attempt.id] =
+      `Enter a grade from ${attempt.autoGradedPoints} to ${selectedQuiz.value.totalPoints}.`
     return
   }
   gradingAttemptId.value = attempt.id
@@ -545,6 +675,12 @@ function quizBadge(quiz) {
   if (isUpcoming(quiz)) return { label: 'Upcoming', color: 'grey' }
   if (isOpen(quiz)) return { label: 'Open', color: 'primary' }
   return { label: 'Closed', color: 'grey' }
+}
+
+function learnerSubmissionLabel(quiz) {
+  if (!quiz.hasMultipleChoiceQuestions) return 'Submitted — awaiting grade'
+  if (!quiz.hasWrittenQuestions) return `Auto-graded: ${quiz.myGrade} / ${quiz.totalPoints}`
+  return `Auto-scored ${quiz.myAutoGradedPoints} points · written answers awaiting grade`
 }
 
 function isOpen(quiz) {
